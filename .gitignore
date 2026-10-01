@@ -1,0 +1,11 @@
+node_modules/
+dist/
+transcription/.venv/
+__pycache__/
+*.json.tmp
+
+# Médias : trop lourds pour git
+media/videos/*
+media/transcripts/*
+!media/videos/.gitkeep
+!media/transcripts/.gitkeep
