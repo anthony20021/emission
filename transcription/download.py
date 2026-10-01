@@ -11,8 +11,10 @@ Usage :
     python download.py --no-compress   # sans la compression GPU
 """
 
+import queue
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -62,63 +64,85 @@ def progress(info):
         print("\r  Téléchargement : 100.0 %", flush=True)
 
 
-def compress(path, duration=0):
-    """Ré-encode la vidéo sur le GPU (NVENC) pour gagner de la place, avec un pourcentage en direct.
-    Garde l'original si ça échoue ou ne réduit pas."""
+def encode_command(path, tmp, hwaccel):
     import imageio_ffmpeg
 
-    tmp = path.with_name(path.stem + ".compressing.mp4")
-    started = time.time()
-    command = [
-        imageio_ffmpeg.get_ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-y", "-i", str(path),
+    return [
+        imageio_ffmpeg.get_ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-y",
+        # Décodage sur le GPU aussi : le CPU n'est plus le goulot d'étranglement.
+        *(["-hwaccel", "cuda"] if hwaccel else []),
+        "-i", str(path),
         "-vf", f"scale=-2:'min({MAX_HEIGHT},ih)'",
-        "-c:v", "h264_nvenc", "-preset", "p5", "-rc", "vbr", "-cq", "32", "-b:v", "0", "-g", "50",
+        "-c:v", "h264_nvenc", "-preset", "p3", "-rc", "vbr", "-cq", "32", "-b:v", "0", "-g", "50",
         "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "64k", "-ac", "1",  # mono 64 kbit/s : largement assez pour la parole
         "-movflags", "+faststart",
         "-progress", "pipe:1", "-nostats", str(tmp),
     ]
+
+
+def compress(path, duration=0, quiet=False):
+    """Ré-encode la vidéo sur le GPU (NVENC) pour gagner de la place.
+    Garde l'original si ça échoue ou ne réduit pas. quiet=True : pas de pourcentage (tâche de fond)."""
+    tmp = path.with_name(path.stem + ".compressing.mp4")
+    started = time.time()
     before = path.stat().st_size
-    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    try:
-        watch_progress(process, duration, started)
-    except KeyboardInterrupt:
-        process.kill()
+    label = f"  [{path.stem[:40]}] " if quiet else "  "
+    errors = ""
+    for hwaccel in (True, False):  # si le décodage GPU échoue, on réessaie avec le décodage CPU
+        process = subprocess.Popen(encode_command(path, tmp, hwaccel), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            watch_progress(process, duration, started, quiet, path.stem)
+        except KeyboardInterrupt:
+            process.kill()
+            tmp.unlink(missing_ok=True)
+            print("\n  Compression annulée : vidéo gardée telle quelle.")
+            return
+        process.wait()
+        errors = process.stderr.read()
+        if process.returncode == 0 and tmp.exists():
+            break
         tmp.unlink(missing_ok=True)
-        print("\n  Compression annulée : vidéo gardée telle quelle.")
-        return
-    process.wait()
-    errors = process.stderr.read()
-    print("\r" + " " * 50 + "\r", end="")
-    if process.returncode != 0 or not tmp.exists():
-        tmp.unlink(missing_ok=True)
-        print("  Compression GPU échouée : vidéo gardée telle quelle.")
+    if not quiet:
+        print("\r" + " " * 50 + "\r", end="")
+    if not tmp.exists():
+        print(f"{label}Compression GPU échouée : vidéo gardée telle quelle.")
         if errors.strip():
             print("  " + errors.strip().splitlines()[-1][:200])
         return
     after = tmp.stat().st_size
     if after >= before:
         tmp.unlink()
-        print("  Déjà légère : vidéo gardée telle quelle.")
+        print(f"{label}Déjà légère : vidéo gardée telle quelle.")
         return
     tmp.replace(path)
-    print(f"  Compressée : {before / 1e6:.0f} Mo -> {after / 1e6:.0f} Mo en {time.time() - started:.0f} s")
+    print(f"{label}Compressée : {before / 1e6:.0f} Mo -> {after / 1e6:.0f} Mo en {time.time() - started:.0f} s")
 
 
-def watch_progress(process, duration, started):
+def watch_progress(process, duration, started, quiet=False, name=""):
+    """quiet (tâche de fond) : une ligne par palier de 10 %, pour ne pas écraser la ligne de saisie."""
+    last_step = -1
     for line in process.stdout:
-        if duration and line.startswith("out_time_us="):
-            try:
-                done = int(line.split("=")[1]) / 1e6
-            except ValueError:
-                continue
-            ratio = min(1.0, done / duration)
-            elapsed = time.time() - started
-            eta = f", reste ~{int(elapsed / ratio - elapsed)} s" if ratio > 0.02 else ""
+        if not duration or not line.startswith("out_time_us="):
+            continue
+        try:
+            done = int(line.split("=")[1]) / 1e6
+        except ValueError:
+            continue
+        ratio = min(1.0, done / duration)
+        elapsed = time.time() - started
+        eta = f", reste ~{int(elapsed / ratio - elapsed)} s" if ratio > 0.02 else ""
+        if quiet:
+            step = int(ratio * 10)
+            if step > last_step and step < 10:
+                last_step = step
+                print(f"  [{name[:40]}] Compression : {step * 10:3d} %{eta}", flush=True)
+        else:
             print(f"\r  Compression : {ratio * 100:5.1f} %{eta}   ", end="", flush=True)
 
 
-def download(url, options, do_compress=True):
+def download(url, options, compress_queue=None):
+    """Télécharge la vidéo ; la compression part en tâche de fond (compress_queue) pour enchaîner."""
     from yt_dlp import YoutubeDL
 
     with YoutubeDL(options) as ydl:
@@ -127,12 +151,32 @@ def download(url, options, do_compress=True):
             info = next(iter(info["entries"]))
         path = Path(ydl.prepare_filename(info)).with_suffix(".mp4")
     duration = int(info.get("duration") or 0)
-    if do_compress:
-        compress(path, duration)
     print(f"  OK : {path.name} ({duration // 60} min {duration % 60:02d} s, {path.stat().st_size / 1e6:.0f} Mo)")
     if 0 < duration < 25:
         print("  Attention : moins de 25 s, la vidéo sera ignorée par le jeu.")
+    if compress_queue is not None:
+        compress_queue.put((path, duration))
+        print("  Compression lancée en tâche de fond.")
     return path
+
+
+def start_compressor(interactive):
+    """Un seul encodage à la fois (le GPU est déjà à fond), en tâche de fond."""
+    jobs = queue.Queue()
+
+    def worker():
+        while True:
+            job = jobs.get()
+            try:
+                if job is None:
+                    return
+                compress(*job, quiet=interactive)
+            finally:
+                jobs.task_done()
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+    return jobs, thread
 
 
 def main():
@@ -143,6 +187,9 @@ def main():
     urls = [a for a in args if not a.startswith("--")]
     interactive = not urls
     downloaded = 0
+    jobs = thread = None
+    if do_compress:
+        jobs, thread = start_compressor(interactive)
 
     print(f"Les vidéos arrivent dans : {VIDEOS_DIR}")
     while True:
@@ -159,11 +206,20 @@ def main():
         else:
             break
         try:
-            download(url, options, do_compress)
+            download(url, options, jobs)
             downloaded += 1
         except Exception as error:
             message = str(error).replace("ERROR: ", "").strip()
             print(f"\n  Échec : {message}")
+
+    if jobs is not None:
+        if jobs.unfinished_tasks:
+            print(f"\nCompression en cours ({jobs.unfinished_tasks} vidéo(s))… Ctrl+C pour annuler.")
+        try:
+            jobs.join()
+        except KeyboardInterrupt:
+            print("\nCompression interrompue.")
+            return
 
     if downloaded and interactive:
         try:
