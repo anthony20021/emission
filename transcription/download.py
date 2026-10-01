@@ -62,8 +62,9 @@ def progress(info):
         print("\r  Téléchargement : 100.0 %", flush=True)
 
 
-def compress(path):
-    """Ré-encode la vidéo sur le GPU (NVENC) pour gagner de la place. Garde l'original si ça échoue ou ne réduit pas."""
+def compress(path, duration=0):
+    """Ré-encode la vidéo sur le GPU (NVENC) pour gagner de la place, avec un pourcentage en direct.
+    Garde l'original si ça échoue ou ne réduit pas."""
     import imageio_ffmpeg
 
     tmp = path.with_name(path.stem + ".compressing.mp4")
@@ -74,13 +75,26 @@ def compress(path):
         "-c:v", "h264_nvenc", "-preset", "p5", "-rc", "vbr", "-cq", "32", "-b:v", "0", "-g", "50",
         "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "64k", "-ac", "1",  # mono 64 kbit/s : largement assez pour la parole
-        "-movflags", "+faststart", str(tmp),
+        "-movflags", "+faststart",
+        "-progress", "pipe:1", "-nostats", str(tmp),
     ]
     before = path.stat().st_size
-    result = subprocess.run(command, capture_output=True, text=True)
-    if result.returncode != 0 or not tmp.exists():
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        watch_progress(process, duration, started)
+    except KeyboardInterrupt:
+        process.kill()
         tmp.unlink(missing_ok=True)
-        print("  Compression GPU indisponible : vidéo gardée telle quelle.")
+        print("\n  Compression annulée : vidéo gardée telle quelle.")
+        return
+    process.wait()
+    errors = process.stderr.read()
+    print("\r" + " " * 50 + "\r", end="")
+    if process.returncode != 0 or not tmp.exists():
+        tmp.unlink(missing_ok=True)
+        print("  Compression GPU échouée : vidéo gardée telle quelle.")
+        if errors.strip():
+            print("  " + errors.strip().splitlines()[-1][:200])
         return
     after = tmp.stat().st_size
     if after >= before:
@@ -91,6 +105,19 @@ def compress(path):
     print(f"  Compressée : {before / 1e6:.0f} Mo -> {after / 1e6:.0f} Mo en {time.time() - started:.0f} s")
 
 
+def watch_progress(process, duration, started):
+    for line in process.stdout:
+        if duration and line.startswith("out_time_us="):
+            try:
+                done = int(line.split("=")[1]) / 1e6
+            except ValueError:
+                continue
+            ratio = min(1.0, done / duration)
+            elapsed = time.time() - started
+            eta = f", reste ~{int(elapsed / ratio - elapsed)} s" if ratio > 0.02 else ""
+            print(f"\r  Compression : {ratio * 100:5.1f} %{eta}   ", end="", flush=True)
+
+
 def download(url, options, do_compress=True):
     from yt_dlp import YoutubeDL
 
@@ -99,9 +126,9 @@ def download(url, options, do_compress=True):
         if "entries" in info:  # URL de playlist malgré noplaylist : on prend la première vidéo
             info = next(iter(info["entries"]))
         path = Path(ydl.prepare_filename(info)).with_suffix(".mp4")
-    if do_compress:
-        compress(path)
     duration = int(info.get("duration") or 0)
+    if do_compress:
+        compress(path, duration)
     print(f"  OK : {path.name} ({duration // 60} min {duration % 60:02d} s, {path.stat().st_size / 1e6:.0f} Mo)")
     if 0 < duration < 25:
         print("  Attention : moins de 25 s, la vidéo sera ignorée par le jeu.")
