@@ -2,16 +2,18 @@
 Télécharge des vidéos YouTube en mp4 dans media/videos, en boucle.
 
 Colle une URL, la vidéo est téléchargée (480p max, pour économiser de la place)
-et le titre de la vidéo devient le titre affiché aux joueurs. Ligne vide ou "q" pour quitter.
+puis compressée sur le GPU (NVENC), et le titre de la vidéo devient le titre affiché aux joueurs. Ligne vide ou "q" pour quitter.
 À la fin, propose de lancer la transcription des nouvelles vidéos.
 
 Usage :
     python download.py                 # mode boucle
     python download.py URL [URL ...]   # télécharge ces URL puis s'arrête
+    python download.py --no-compress   # sans la compression GPU
 """
 
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -60,7 +62,36 @@ def progress(info):
         print("\r  Téléchargement : 100.0 %", flush=True)
 
 
-def download(url, options):
+def compress(path):
+    """Ré-encode la vidéo sur le GPU (NVENC) pour gagner de la place. Garde l'original si ça échoue ou ne réduit pas."""
+    import imageio_ffmpeg
+
+    tmp = path.with_name(path.stem + ".compressing.mp4")
+    started = time.time()
+    command = [
+        imageio_ffmpeg.get_ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-y", "-i", str(path),
+        "-vf", f"scale=-2:'min({MAX_HEIGHT},ih)'",
+        "-c:v", "h264_nvenc", "-preset", "p5", "-rc", "vbr", "-cq", "32", "-b:v", "0", "-g", "50",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "64k", "-ac", "1",  # mono 64 kbit/s : largement assez pour la parole
+        "-movflags", "+faststart", str(tmp),
+    ]
+    before = path.stat().st_size
+    result = subprocess.run(command, capture_output=True, text=True)
+    if result.returncode != 0 or not tmp.exists():
+        tmp.unlink(missing_ok=True)
+        print("  Compression GPU indisponible : vidéo gardée telle quelle.")
+        return
+    after = tmp.stat().st_size
+    if after >= before:
+        tmp.unlink()
+        print("  Déjà légère : vidéo gardée telle quelle.")
+        return
+    tmp.replace(path)
+    print(f"  Compressée : {before / 1e6:.0f} Mo -> {after / 1e6:.0f} Mo en {time.time() - started:.0f} s")
+
+
+def download(url, options, do_compress=True):
     from yt_dlp import YoutubeDL
 
     with YoutubeDL(options) as ydl:
@@ -68,6 +99,8 @@ def download(url, options):
         if "entries" in info:  # URL de playlist malgré noplaylist : on prend la première vidéo
             info = next(iter(info["entries"]))
         path = Path(ydl.prepare_filename(info)).with_suffix(".mp4")
+    if do_compress:
+        compress(path)
     duration = int(info.get("duration") or 0)
     print(f"  OK : {path.name} ({duration // 60} min {duration % 60:02d} s, {path.stat().st_size / 1e6:.0f} Mo)")
     if 0 < duration < 25:
@@ -78,7 +111,9 @@ def download(url, options):
 def main():
     VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
     options = build_options()
-    urls = sys.argv[1:]
+    args = sys.argv[1:]
+    do_compress = "--no-compress" not in args
+    urls = [a for a in args if not a.startswith("--")]
     interactive = not urls
     downloaded = 0
 
@@ -97,7 +132,7 @@ def main():
         else:
             break
         try:
-            download(url, options)
+            download(url, options, do_compress)
             downloaded += 1
         except Exception as error:
             message = str(error).replace("ERROR: ", "").strip()

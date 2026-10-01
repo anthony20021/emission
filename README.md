@@ -19,7 +19,8 @@ npm install
 ## Ajouter des émissions
 
 0. (Optionnel) Télécharge des vidéos YouTube en mp4 avec `npm run download` : colle une URL, la vidéo arrive dans
-   `media/videos/` (480p max, titre YouTube = titre du jeu), puis le script propose de lancer la transcription.
+   `media/videos/` (480p max, titre YouTube = titre du jeu), compressées sur le GPU NVIDIA (NVENC, quelques secondes par vidéo ;
+   `--no-compress` pour désactiver, ignoré si pas de GPU compatible), puis le script propose de lancer la transcription.
    Il tourne en boucle : une URL après l'autre, ligne vide pour quitter. Respecte les droits des contenus que tu télécharges.
 1. Dépose les vidéos dans `media/videos/` (`.mp4`, `.webm`, `.m4v`, `.mov`).
    **Le nom du fichier est le titre affiché aux joueurs** : `Quotidien - 12 mars.mp4` devient « Quotidien - 12 mars ».
