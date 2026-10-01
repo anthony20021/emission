@@ -1,7 +1,7 @@
 """
 Télécharge des vidéos YouTube en mp4 dans media/videos, en boucle.
 
-Colle une URL, la vidéo est téléchargée (720p max, largement suffisant pour le jeu)
+Colle une URL, la vidéo est téléchargée (480p max, pour économiser de la place)
 et le titre de la vidéo devient le titre affiché aux joueurs. Ligne vide ou "q" pour quitter.
 À la fin, propose de lancer la transcription des nouvelles vidéos.
 
@@ -18,7 +18,7 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 ROOT = Path(__file__).resolve().parent.parent
 VIDEOS_DIR = ROOT / "media" / "videos"
-MAX_HEIGHT = 720
+MAX_HEIGHT = 480
 
 
 class SilentLogger:
@@ -34,7 +34,7 @@ def build_options():
     import imageio_ffmpeg
 
     return {
-        # Meilleure vidéo mp4 <= 720p + meilleur audio m4a, fusionnés en mp4 ; sinon le meilleur fichier disponible.
+        # Meilleure vidéo mp4 <= MAX_HEIGHT + meilleur audio m4a, fusionnés en mp4 ; sinon le meilleur fichier disponible.
         "format": f"bv*[height<={MAX_HEIGHT}][ext=mp4]+ba[ext=m4a]/b[height<={MAX_HEIGHT}][ext=mp4]/b[height<={MAX_HEIGHT}]/b",
         "merge_output_format": "mp4",
         "ffmpeg_location": imageio_ffmpeg.get_ffmpeg_exe(),

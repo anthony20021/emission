@@ -12,6 +12,7 @@
     "start": "node server/index.js",
     "transcribe": "node scripts/transcribe.js",
     "download": "node scripts/download.js",
+    "check-clip": "node scripts/check-clip.js",
     "test": "node --test \"test/*.test.js\""
   },
   "dependencies": {
