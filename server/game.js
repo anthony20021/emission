@@ -10,6 +10,7 @@ import { randomInt, randomUUID } from 'node:crypto';
 import { parsePlayerWords, WORDS_PER_PLAYER } from '../shared/words.js';
 import { loadLibrary } from './library.js';
 import { pickClip, scoreClip } from './clips.js';
+import { cutClip, removeClip } from './clipcut.js';
 
 const MAX_PLAYERS = 2;
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -22,7 +23,8 @@ const CHAT_RATE = { count: 5, windowMs: 5_000 };
 
 const RECONNECT_GRACE_MS = 60_000;
 const CHOICE_GRACE_MS = 1_500; // laisse le temps au client d'envoyer ses mots à la fin du chrono
-const LOADING_TIMEOUT_MS = 20_000;
+const MEDIA_WAIT_MS = 15_000; // attente max de la découpe de l'extrait (elle a commencé dès le début de la manche)
+const LOADING_TIMEOUT_MS = 30_000; // le joueur le plus lent a ce temps pour charger l'extrait
 const COUNTDOWN_MS = 3_000;
 const END_MARGIN_MS = 1_200;
 const RESULTS_TIMEOUT_MS = 45_000;
@@ -86,6 +88,7 @@ class Room {
       words: [],
       locked: false,
       ready: false,
+      loadProgress: 0,
       wantsNext: false,
       chatTimes: [],
       graceTimer: null,
@@ -140,6 +143,7 @@ class Room {
 
   destroy() {
     clearTimeout(this.timer);
+    removeClip(this.round?.media);
     for (const player of this.players) clearTimeout(player.graceTimer);
     rooms.delete(this.code);
   }
@@ -180,6 +184,7 @@ class Room {
 
   resetGame() {
     this.setTimer(null);
+    removeClip(this.round?.media);
     this.phase = 'lobby';
     this.round = null;
     this.history = [];
@@ -239,14 +244,23 @@ class Room {
 
     for (const p of this.players) Object.assign(p, { draft: [], words: [], locked: false, ready: false, wantsNext: false });
     const seconds = this.settings.choiceSeconds;
-    this.round = {
+    removeClip(this.round?.media);
+    const round = {
       number,
       video,
       clip,
       deadline: seconds ? Date.now() + seconds * 1000 : null,
       playAt: null,
       result: null,
+      media: null, // extrait découpé par le serveur (null : vidéo complète)
+      closing: false,
     };
+    // Découpe lancée tout de suite : elle a le temps de finir pendant que les joueurs choisissent leurs mots.
+    round.mediaPromise = cutClip(video, clip).then((media) => {
+      if (this.round === round) round.media = media;
+      else removeClip(media);
+    });
+    this.round = round;
     this.phase = 'choosing';
     this.setTimer(seconds ? seconds * 1000 + CHOICE_GRACE_MS : null, () => this.closeChoices());
     this.system(`Manche ${number} : « ${video.title} »`);
@@ -254,12 +268,12 @@ class Room {
   }
 
   setDraft(player, words) {
-    if (this.phase !== 'choosing' || player.locked) return;
+    if (this.phase !== 'choosing' || this.round.closing || player.locked) return;
     player.draft = cleanWords(words);
   }
 
   lock(player, words) {
-    if (this.phase !== 'choosing') return { ok: false, error: 'Trop tard !' };
+    if (this.phase !== 'choosing' || this.round.closing) return { ok: false, error: 'Trop tard !' };
     const draft = cleanWords(words);
     const { errors, valid } = parsePlayerWords(draft, this.settings);
     if (valid.length < WORDS_PER_PLAYER) {
@@ -272,7 +286,7 @@ class Room {
   }
 
   unlock(player) {
-    if (this.phase !== 'choosing' || !player.locked) return;
+    if (this.phase !== 'choosing' || this.round.closing || !player.locked) return;
     player.locked = false;
     player.words = [];
     this.broadcast();
@@ -280,18 +294,37 @@ class Room {
 
   // Fin du choix (tout le monde a validé, ou chrono écoulé : on prend les mots valides du brouillon).
   closeChoices() {
-    if (this.phase !== 'choosing') return;
+    const round = this.round;
+    if (this.phase !== 'choosing' || round.closing) return;
+    round.closing = true;
     for (const p of this.players) {
       if (!p.locked) {
         p.words = parsePlayerWords(p.draft, this.settings).valid;
         p.locked = true;
       }
     }
+    this.broadcast();
+    // En général la découpe est déjà finie ; sinon on l'attend un peu (au pire : vidéo complète).
+    const wait = new Promise((resolve) => setTimeout(resolve, MEDIA_WAIT_MS));
+    Promise.race([round.mediaPromise, wait]).then(() => {
+      if (this.round === round && this.phase === 'choosing') this.startLoading();
+    });
+  }
+
+  startLoading() {
     const { video, clip } = this.round;
     this.round.result = scoreClip(video, clip, this.players);
     this.phase = 'loading';
-    for (const p of this.players) p.ready = false;
+    for (const p of this.players) Object.assign(p, { ready: false, loadProgress: 0 });
     this.setTimer(LOADING_TIMEOUT_MS, () => this.play());
+    this.broadcast();
+  }
+
+  setLoadProgress(player, pct) {
+    if (this.phase !== 'loading' || player.ready) return;
+    const value = Math.max(0, Math.min(100, Math.round(Number(pct) || 0)));
+    if (value === player.loadProgress) return;
+    player.loadProgress = value;
     this.broadcast();
   }
 
@@ -389,6 +422,7 @@ class Room {
         score: p.score,
         locked: p.locked,
         ready: p.ready,
+        loadProgress: p.loadProgress,
         wantsNext: p.wantsNext,
         words: p.id === viewer.id || revealed ? p.words.map((w) => w.word) : null,
         draft: p.id === viewer.id ? p.draft : null,
@@ -398,7 +432,14 @@ class Room {
         total: this.settings.rounds,
         title: round.video.title,
         deadline: round.deadline,
-        video: revealed ? { url: round.video.url, start: round.clip.start, end: round.clip.end } : null,
+        video: revealed
+          ? {
+            url: round.media?.url ?? round.video.url,
+            offset: round.media?.offset ?? 0, // le fichier commence à cet instant de l'émission
+            start: round.clip.start,
+            end: round.clip.end,
+          }
+          : null,
         playAt: round.playAt,
         result: this.phase === 'playing' || this.phase === 'results' ? round.result : null,
       },
@@ -520,6 +561,7 @@ export function registerGame(io) {
     socket.on('words:lock', inRoom(({ room, player }, { words }) => room.lock(player, words)));
     socket.on('words:unlock', inRoom(({ room, player }) => room.unlock(player)));
     socket.on('clip:ready', inRoom(({ room, player }) => room.setReady(player)));
+    socket.on('clip:progress', inRoom(({ room, player }, { pct }) => room.setLoadProgress(player, pct)));
     socket.on('round:next', inRoom(({ room, player }) => room.wantNext(player)));
     socket.on('chat:send', inRoom(({ room, player }, { text }) => room.say(player, text)));
 

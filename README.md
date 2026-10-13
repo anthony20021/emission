@@ -19,8 +19,9 @@ npm install
 ## Ajouter des émissions
 
 0. (Optionnel) Télécharge des vidéos YouTube en mp4 avec `npm run download` : colle une URL, la vidéo arrive dans
-   `media/videos/` (480p max, titre YouTube = titre du jeu), compressées sur le GPU NVIDIA (NVENC, quelques secondes par vidéo ;
-   `--no-compress` pour désactiver, ignoré si pas de GPU compatible), puis le script propose de lancer la transcription.
+   `media/videos/` (titre YouTube = titre du jeu), puis elle est convertie en tâche de fond au format léger du jeu
+   (H.264 240p, son mono : sur le GPU NVIDIA s'il y en a un, sinon sur le CPU ; `--no-compress` pour garder le 480p).
+   Le script propose ensuite de lancer la transcription.
    Il tourne en boucle : une URL après l'autre, ligne vide pour quitter. Respecte les droits des contenus que tu télécharges.
 1. Dépose les vidéos dans `media/videos/` (`.mp4`, `.webm`, `.m4v`, `.mov`).
    **Le nom du fichier est le titre affiché aux joueurs** : `Quotidien - 12 mars.mp4` devient « Quotidien - 12 mars ».
@@ -49,6 +50,9 @@ Une vidéo de démo (`Exemple - Journal TV.mp4`, voix de synthèse) est fournie 
 Pour vérifier que les extraits tirés par le jeu correspondent bien à l'audio, lance `npm run check-clip` : il tire un
 extrait au hasard, re-transcrit à part le son découpé et compare avec les mots que le jeu croit entendre.
 
+`npm run compress` (facultatif) convertit les vidéos déjà présentes au format léger pour gagner de la place.
+Il liste les fichiers concernés et **demande confirmation : les originaux sont remplacés**. Les transcriptions restent valables.
+
 ## Jouer
 
 ```bash
@@ -61,6 +65,7 @@ Pour tester seul, ouvre deux onglets : chaque onglet est un joueur différent.
 En production :
 
 ```bash
+apt install ffmpeg   # conseillé : voir « Vidéo et petites connexions » plus bas
 npm run build
 npm start        # http://localhost:3000 (variable PORT pour changer)
 ```
@@ -96,7 +101,20 @@ Un mot dit plusieurs fois rapporte quand même 1 seul point. Avec le filtre acti
 
 **Synchronisation.** Le serveur décide de tout (phases, chrono, points). Chaque client mesure le décalage de son
 horloge avec le serveur, précharge la vidéo au bon moment, puis lance la lecture à l'instant fixé par le serveur.
-Seules les vidéos sont servies publiquement : les transcriptions restent côté serveur, donc impossible de tricher en les lisant.
+Les transcriptions restent côté serveur, donc impossible de tricher en les lisant.
+
+**Vidéo et petites connexions** (`server/clipcut.js`). Dans un mp4, l'index du fichier pèse 2 à 5 Mo pour une émission
+d'une heure, et le navigateur doit le télécharger avant de pouvoir sauter au bon passage. Si **ffmpeg** est installé sur
+le serveur, celui-ci découpe donc l'extrait (~1 Mo, H.264 240p) dès le début de la manche, pendant que les joueurs
+choisissent leurs mots : le navigateur ne télécharge que ce petit fichier. Il est réencodé, donc lisible par tous
+les navigateurs même si la source est en AV1. Mesuré avec une connexion bridée à 600 kbit/s : extrait prêt en ~6 s
+(contre 30 s et plus avec la vidéo complète). Sans ffmpeg, le jeu utilise la vidéo complète, comme avant.
+Sur Windows, ou si ffmpeg n'est pas dans le PATH, indique son chemin avec la variable `FFMPEG_PATH`.
+
+Côté navigateur, le lecteur attend d'avoir ~12 s d'extrait en mémoire avant de se dire prêt, et affiche la
+progression (la tienne et celle de l'adversaire). Si la lecture doit s'arrêter pour charger, elle rattrape ensuite
+l'autre joueur. En cas d'erreur, la vidéo est rechargée 2 fois. Si elle reste illisible, les sous-titres et les points
+continuent quand même.
 
 ## Structure
 

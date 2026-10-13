@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { Server } from 'socket.io';
 import { VIDEOS_DIR, loadLibrary } from './library.js';
 import { registerGame } from './game.js';
+import { CLIPS_DIR, ffmpegAvailable, resetClipsDir } from './clipcut.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DIST_DIR = path.join(ROOT, 'dist');
@@ -16,6 +17,10 @@ const app = express();
 // Seules les vidéos sont publiques (pas les transcriptions, sinon on pourrait tricher).
 // express.static gère les requêtes "Range" : le navigateur peut sauter directement au bon moment.
 app.use('/media/videos', express.static(VIDEOS_DIR, { fallthrough: false, maxAge: '1h' }));
+
+// Extraits découpés pour la manche en cours (noms aléatoires, supprimés après la manche).
+resetClipsDir();
+app.use('/clips', express.static(CLIPS_DIR, { fallthrough: false, maxAge: '1h' }));
 
 app.get('/api/library', async (_req, res) => {
   const { videos, missing, invalid } = await loadLibrary();
@@ -32,6 +37,9 @@ server.listen(PORT, async () => {
   console.log(`Serveur de jeu sur http://localhost:${PORT}`);
   const { videos, missing, invalid } = await loadLibrary();
   console.log(`${videos.length} émission(s) jouable(s).`);
+  console.log(ffmpegAvailable
+    ? 'ffmpeg trouvé : les extraits sont découpés par le serveur (~1 Mo, lisibles partout).'
+    : 'ffmpeg introuvable : les joueurs chargeront la vidéo complète (installe ffmpeg : apt install ffmpeg).');
   if (missing.length) {
     console.log(`${missing.length} vidéo(s) sans transcription : ${missing.join(', ')}`);
     console.log('  -> lance "npm run transcribe" pour les préparer.');

@@ -8,7 +8,7 @@ function status(player) {
   if (!player.connected) return { icon: '⚠', text: 'Déconnecté' };
   switch (room.value.phase) {
     case 'choosing': return player.locked ? { icon: '✓', text: 'Mots validés' } : { icon: '…', text: 'Réfléchit' };
-    case 'loading': return player.ready ? { icon: '✓', text: 'Prêt' } : { icon: '…', text: 'Chargement' };
+    case 'loading': return player.ready ? { icon: '✓', text: 'Prêt' } : { icon: '…', text: `Chargement ${player.loadProgress ?? 0} %` };
     case 'results': return player.wantsNext ? { icon: '✓', text: 'Prêt' } : null;
     default: return null;
   }

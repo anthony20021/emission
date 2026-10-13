@@ -129,6 +129,7 @@ export const actions = {
   lock: (words) => emit('words:lock', { words }),
   unlock: () => emit('words:unlock'),
   clipReady: () => emit('clip:ready'),
+  clipProgress: (pct) => socket.emit('clip:progress', { pct }),
   next: () => emit('round:next'),
   say: (text) => emit('chat:send', { text }),
 };

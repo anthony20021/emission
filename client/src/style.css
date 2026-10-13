@@ -159,6 +159,13 @@ input:disabled { opacity: 0.7; }
 .screen-overlay { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: 10px; background: rgba(5, 8, 20, 0.82); font-weight: 700; font-size: 1.1rem; border: 0; color: var(--text); }
 .screen-overlay.soft { background: rgba(5, 8, 20, 0.55); }
 .screen-overlay.clickable { cursor: pointer; font-size: 1.3rem; }
+.screen-overlay.loading { flex-direction: column; gap: 14px; font-variant-numeric: tabular-nums; }
+.screen-overlay.loading > span { display: flex; align-items: center; gap: 10px; }
+.load-bar { width: min(260px, 60%); height: 6px; border-radius: 999px; background: rgba(255, 255, 255, 0.12); overflow: hidden; }
+.load-bar div { height: 100%; background: var(--accent); transform-origin: left; transition: transform 0.3s ease; }
+.screen-overlay.failed { flex-direction: column; text-align: center; padding: 0 20px; font-size: 1rem; }
+.screen-overlay.failed small { color: var(--muted); font-weight: 500; }
+.buffering { position: absolute; top: 14px; left: 14px; display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-radius: 999px; background: rgba(5, 8, 20, 0.8); font-size: 0.85rem; font-weight: 700; }
 .countdown span { font-size: 7rem; font-weight: 900; color: var(--accent); text-shadow: 0 0 40px rgba(250, 204, 21, 0.6); }
 .subtitles { position: absolute; left: 5%; right: 5%; bottom: 9%; text-align: center; font-size: clamp(1rem, 2.3vw, 1.5rem); font-weight: 700; line-height: 1.6; }
 .sub-word { background: rgba(0, 0, 0, 0.7); padding: 0.1em 0; box-decoration-break: clone; -webkit-box-decoration-break: clone; transition: opacity 0.12s; white-space: pre-wrap; }

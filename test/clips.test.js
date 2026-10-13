@@ -55,6 +55,8 @@ test('1 point par mot trouvé, même s\'il est dit plusieurs fois', () => {
   const { scores, tokens } = scoreClip(entry, clip, players);
   assert.equal(players[0].words.length, 2); // "Fromages" = doublon de "fromage"
   assert.equal(scores.a.points, 1);
-  assert.ok(scores.a.words[0].occurrences.length >= 4);
+  const said = tokensInClip(entry.tokens, clip).filter((t) => t.text === 'fromage').length;
+  assert.ok(said >= 1);
+  assert.equal(scores.a.words[0].occurrences.length, said); // chaque occurrence trouvée, 1 seul point
   assert.ok(tokens.every((t) => (t.s + t.e) / 2 >= clip.start && (t.s + t.e) / 2 <= clip.end));
 });

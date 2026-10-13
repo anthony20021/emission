@@ -21,13 +21,13 @@ const replaying = ref(false);
 
 function replay() {
   const el = replayEl.value;
-  const { url, start, end } = round.value.video;
+  const { url, start, end, offset = 0 } = round.value.video;
   if (!el.src) el.src = url;
-  el.currentTime = start;
+  el.currentTime = start - offset;
   replaying.value = true;
   el.play().catch(() => (replaying.value = false));
   const stop = () => {
-    if (el.currentTime >= end) {
+    if (el.currentTime + offset >= end) {
       el.pause();
       replaying.value = false;
       el.removeEventListener('timeupdate', stop);
